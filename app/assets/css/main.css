@@ -52,6 +52,8 @@ body {
   overflow-x: hidden;
   /* スマホのスクロール制御 */
   -webkit-overflow-scrolling: touch;
+  /* ダブルタップズームの防止 */
+  touch-action: manipulation;
 }
 
 /* Layout container for smartphone */
