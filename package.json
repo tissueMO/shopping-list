@@ -1,0 +1,26 @@
+{
+  "name": "shopping-list",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@slack/web-api": "^7.16.0",
+    "nuxt": "^4.4.6",
+    "openai": "^6.41.0",
+    "vue": "^3.5.34",
+    "vue-router": "^5.0.7"
+  },
+  "devDependencies": {
+    "@nuxt/eslint": "^0.6.1",
+    "eslint": "^9.10.0",
+    "typescript": "^5.5.4",
+    "vue-tsc": "^2.1.6"
+  }
+}
