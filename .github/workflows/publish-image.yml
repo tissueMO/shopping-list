@@ -42,3 +42,14 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  trigger-deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Deployment Webhook
+        run: |
+          curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            "${{ secrets.WEBHOOK_URL }}"
