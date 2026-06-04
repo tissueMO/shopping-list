@@ -1,61 +1,88 @@
 import { defineEventHandler, readBody } from 'h3';
+import { getErrorMessage, isObject } from '../utils/error';
 import { getSlackClient, checkedItems } from '../utils/state';
+
+interface PurchaseRequestBody {
+  tsList?: unknown;
+}
+
+interface ReactionResult {
+  status: 'success' | 'partial_success';
+  message: string;
+}
+
+const CHECK_REACTION_NAME = 'heavy_check_mark';
+const ALREADY_REACTED_ERROR = 'already_reacted';
 
 /**
  * 選択された買い物アイテムを購入済みにします。
- * ※ Slackのメッセージにチェックマークのリアクションを追加する
+ * ※Slackのメッセージにチェックマークのリアクションを追加する。
+ *
+ * @param event リクエストイベント
  * @returns 処理結果のステータスメッセージ
  */
-export default defineEventHandler(async (event) => {
+export default defineEventHandler(async (event): Promise<ReactionResult> => {
   const config = useRuntimeConfig();
   const channelId = config.slackChannelId;
   if (!channelId) {
     throw createError({
       statusCode: 500,
-      statusMessage: 'NUXT_SLACK_CHANNEL_ID is not configured.',
+      statusMessage: 'SlackチャンネルIDが設定されていません。',
     });
   }
 
-  const body = await readBody(event);
-  const { tsList } = body;
-
-  if (!tsList || !Array.isArray(tsList) || tsList.length === 0) {
+  const body = await readBody<PurchaseRequestBody>(event);
+  if (
+    !Array.isArray(body.tsList) || body.tsList.length === 0 ||
+    !body.tsList.every(value => typeof value === 'string' && value.length > 0)
+  ) {
     throw createError({
       statusCode: 400,
-      statusMessage: 'tsList must be a non-empty array.',
+      statusMessage: 'SlackメッセージIDの一覧が必要です。',
     });
   }
 
+  const tsList = body.tsList;
+
   try {
-    const client = getSlackClient();
-    
-    // Slack投稿へのチェックマークリアクション処理の並行実行
     const results = await Promise.allSettled(
       tsList.map(async (ts) => {
-        const response = await client.reactions.add({
-          channel: channelId,
-          name: 'heavy_check_mark',
-          timestamp: ts,
-        });
-        if (!response.ok) {
-          throw new Error(`Failed to add reaction to ts ${ts}: ${response.error}`);
+        try {
+          const client = getSlackClient();
+          const response = await client.reactions.add({
+            channel: channelId,
+            name: CHECK_REACTION_NAME,
+            timestamp: ts,
+          });
+
+          if (!response.ok) {
+            throw new Error(`Slackリアクション追加に失敗しました: ${response.error}`);
+          }
+        } catch (error) {
+          const isAlreadyReacted = isObject(error) &&
+            isObject(error.data) &&
+            error.data.error === ALREADY_REACTED_ERROR;
+
+          if (!isAlreadyReacted) {
+            throw error;
+          }
         }
-        
+
         checkedItems.delete(ts);
         return ts;
       }),
     );
 
-    const failedCount = results.filter((res) => res.status === 'rejected').length;
+    const failedCount = results.filter(result => result.status === 'rejected').length;
 
     if (failedCount > 0) {
-      results.forEach((res, idx) => {
-        if (res.status === 'rejected') {
-          console.error(`Failed to add reaction to message ${tsList[idx]}:`, res.reason);
+      results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          console.error(`Slackリアクション追加失敗: ${tsList[index]}`, result.reason);
         }
       });
-      console.warn(`Some reactions could not be added: ${failedCount} failures.`);
-      
+
+      console.warn(`Slackリアクション追加に一部失敗しました: ${failedCount}件`);
       return {
         status: 'partial_success',
         message: `${tsList.length - failedCount}件完了、${failedCount}件の処理に失敗しました。`,
@@ -67,11 +94,10 @@ export default defineEventHandler(async (event) => {
       message: `${tsList.length}件のアイテムを購入済みにしました。`,
     };
   } catch (error) {
-    console.error('Error adding reactions to items on Slack:', error);
-    const err = error as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    console.error('Slack購入済み処理エラー:', error);
     throw createError({
       statusCode: 500,
-      statusMessage: err.message || '購入済み処理に失敗しました。',
+      statusMessage: getErrorMessage(error, '購入済み処理に失敗しました。'),
     });
   }
 });

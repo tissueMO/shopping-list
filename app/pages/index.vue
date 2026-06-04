@@ -7,8 +7,26 @@ interface ShoppingItem {
   user: string;
   tsFormatted: string;
   checked: boolean;
-  category?: string; // AIソート時に割り当てられるカテゴリー
+  /** AIソート時の分類 */
+  category?: string;
 }
+
+interface ShoppingGroup {
+  name: string;
+  list: ShoppingItem[];
+}
+
+interface FetchItemsOptions {
+  /** 購入済み処理中でも更新するかどうか */
+  force?: boolean;
+}
+
+const POLL_INTERVAL_MS = 5000;
+const SYNC_BADGE_VISIBLE_MS = 800;
+const TOAST_VISIBLE_MS = 3000;
+const USER_NAME_MAX_LENGTH = 4;
+const UNCLASSIFIED_CATEGORY = '未分類';
+const UNCLASSIFIED_GROUP_NAME = '未分類 (その他)';
 
 const items = ref<ShoppingItem[]>([]);
 const categories = ref<string[]>([]);
@@ -17,54 +35,54 @@ const isDeleteLoading = ref(false);
 const isAiSortLoading = ref(false);
 const isAiSorted = ref(false);
 const syncActive = ref(false);
+const updatingTsList = ref<string[]>([]);
 
 const showToast = ref(false);
 const toastMessage = ref('');
 const toastType = ref<'success' | 'error'>('success');
 
-let pollTimer: NodeJS.Timeout | null = null;
-let toastTimer: NodeJS.Timeout | null = null;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
 const aiCategoryCache = new Map<string, string>();
 
-// チェックされたアイテムのtsリスト
+/** チェック済みアイテムのSlackメッセージID一覧 */
 const checkedTsList = computed(() => {
   return items.value.filter(item => item.checked).map(item => item.ts);
 });
 
-// AIソート適用時と通常時のアイテムグループ
-const groupedItems = computed(() => {
+/** AIソート適用時の表示グループ一覧 */
+const groupedItems = computed<ShoppingGroup[]>(() => {
   if (!isAiSorted.value) {
     return [];
   }
 
   const groups: Record<string, ShoppingItem[]> = {};
-  
-  // 初期化
-  categories.value.forEach(cat => {
-    groups[cat] = [];
-  });
-  groups['未分類'] = [];
 
-  // 分配
+  categories.value.forEach(category => {
+    groups[category] = [];
+  });
+  groups[UNCLASSIFIED_CATEGORY] = [];
+
   items.value.forEach(item => {
-    const cat = item.category || '未分類';
-    if (groups[cat]) {
-      groups[cat].push(item);
+    const category = item.category || UNCLASSIFIED_CATEGORY;
+    if (groups[category]) {
+      groups[category].push(item);
     } else {
-      groups['未分類']!.push(item);
+      groups[UNCLASSIFIED_CATEGORY]!.push(item);
     }
   });
 
-  const result = categories.value.map(cat => ({
-    name: cat,
-    list: groups[cat] || [],
-  })).filter(g => g.list.length > 0);
+  const result = categories.value.map(category => ({
+    name: category,
+    list: groups[category] || [],
+  })).filter(group => group.list.length > 0);
 
-  if (groups['未分類'] && groups['未分類'].length > 0) {
+  const unclassifiedItems = groups[UNCLASSIFIED_CATEGORY] || [];
+  if (unclassifiedItems.length > 0) {
     result.push({
-      name: '未分類 (その他)',
-      list: groups['未分類'],
+      name: UNCLASSIFIED_GROUP_NAME,
+      list: unclassifiedItems,
     });
   }
 
@@ -86,47 +104,79 @@ function displayToast(message: string, type: 'success' | 'error' = 'success') {
   showToast.value = true;
   toastTimer = setTimeout(() => {
     showToast.value = false;
-  }, 3000);
+  }, TOAST_VISIBLE_MS);
+}
+
+/**
+ * 指定したアイテムがサーバー同期中かどうかを返します。
+ *
+ * @param ts SlackメッセージID
+ * @returns 同期中かどうか
+ */
+function isUpdating(ts: string): boolean {
+  return updatingTsList.value.includes(ts);
+}
+
+/**
+ * AIソート中のアイテムにキャッシュ済みカテゴリーを反映します。
+ *
+ * @param item 対象アイテム
+ * @returns カテゴリーを反映したアイテム
+ */
+function withAiCategory(item: ShoppingItem): ShoppingItem {
+  return {
+    ...item,
+    category: aiCategoryCache.get(item.ts),
+  };
+}
+
+/**
+ * 画面に収まる投稿者名を返します。
+ *
+ * @param user 投稿者名
+ * @returns 短縮済み投稿者名
+ */
+function formatUserName(user: string): string {
+  return user.length > USER_NAME_MAX_LENGTH
+    ? `${user.slice(0, USER_NAME_MAX_LENGTH)}...`
+    : user;
 }
 
 /**
  * Slackから最新の買い物リストを取得します。
  * ※ 他ユーザーのチェック状態も含めて同期する
+ *
+ * @param options 更新オプション
  */
-async function fetchItems() {
+async function fetchItems(options: FetchItemsOptions = {}) {
+  const shouldSkipPolling = isDeleteLoading.value && !options.force;
+  if (shouldSkipPolling) {
+    return;
+  }
+
   syncActive.value = true;
   try {
     const data = await $fetch<{ items: ShoppingItem[] }>('/api/items');
-    if (data && data.items) {
-      const newTsList = data.items.map(i => i.ts);
-      const currentTsList = items.value.map(i => i.ts);
-
-      // アイテムリストが完全に同一であるかどうかのチェック
-      const isListIdentical = newTsList.length === currentTsList.length &&
-        newTsList.every((ts, idx) => ts === currentTsList[idx]);
-
-      if (isListIdentical) {
-        items.value = isAiSorted.value
-          ? data.items.map(item => ({
-              ...item,
-              category: aiCategoryCache.get(item.ts) || item.category,
-            }))
-          : data.items;
-      } else {
-        if (isAiSorted.value) {
-          isAiSorted.value = false;
-          aiCategoryCache.clear();
-        }
-        items.value = data.items;
+    const protectedItems = data.items.map(fetchedItem => {
+      if (!isUpdating(fetchedItem.ts)) {
+        return fetchedItem;
       }
-    }
+
+      const currentItem = items.value.find(item => item.ts === fetchedItem.ts);
+      return currentItem
+        ? { ...fetchedItem, checked: currentItem.checked }
+        : fetchedItem;
+    });
+
+    items.value = isAiSorted.value
+      ? protectedItems.map(withAiCategory)
+      : protectedItems;
   } catch (error) {
     console.error('Failed to fetch items:', error);
   } finally {
-    // 同期インジケータの点滅表示
     setTimeout(() => {
       syncActive.value = false;
-    }, 800);
+    }, SYNC_BADGE_VISIBLE_MS);
   }
 }
 
@@ -136,10 +186,16 @@ async function fetchItems() {
  * @param item 対象の買い物アイテム
  */
 async function handleCheckToggle(item: ShoppingItem) {
-  // 楽観的アップデート（UI側を先に書き換える）
+  if (isUpdating(item.ts)) {
+    return;
+  }
+
+  updatingTsList.value = [...updatingTsList.value, item.ts];
+  const originalChecked = item.checked;
+
+  // 画面状態の先行反映
   item.checked = !item.checked;
 
-  // エラー時の状態復元
   try {
     await $fetch('/api/check', {
       method: 'POST',
@@ -150,7 +206,10 @@ async function handleCheckToggle(item: ShoppingItem) {
     });
   } catch (error) {
     console.error('Failed to sync check state:', error);
-    item.checked = !item.checked;
+    item.checked = originalChecked;
+    displayToast('同期に失敗しました。', 'error');
+  } finally {
+    updatingTsList.value = updatingTsList.value.filter(updatingTs => updatingTs !== item.ts);
   }
 }
 
@@ -176,8 +235,7 @@ async function deleteCheckedItems() {
       displayToast('購入済みにしました。', 'success');
     }
     
-    // 処理完了後に再取得
-    await fetchItems();
+    await fetchItems({ force: true });
   } catch (error) {
     console.error('Failed to update items:', error);
     displayToast('処理に失敗しました。', 'error');
@@ -201,13 +259,9 @@ async function toggleAiSort() {
     return;
   }
 
-  // リストに変更がない場合、キャッシュされたカテゴリーを再利用
   const hasAllCache = items.value.every(item => aiCategoryCache.has(item.ts));
   if (hasAllCache) {
-    items.value = items.value.map(item => ({
-      ...item,
-      category: aiCategoryCache.get(item.ts),
-    }));
+    items.value = items.value.map(withAiCategory);
     isAiSorted.value = true;
     return;
   }
@@ -221,17 +275,13 @@ async function toggleAiSort() {
       },
     });
 
-    // キャッシュへの保存
     if (res && res.items) {
       aiCategoryCache.clear();
-      res.items.forEach(i => {
-        aiCategoryCache.set(i.ts, i.category);
+      res.items.forEach(item => {
+        aiCategoryCache.set(item.ts, item.category);
       });
 
-      items.value = items.value.map(item => ({
-        ...item,
-        category: aiCategoryCache.get(item.ts),
-      }));
+      items.value = items.value.map(withAiCategory);
       isAiSorted.value = true;
     }
   } catch (error) {
@@ -264,8 +314,9 @@ onMounted(async () => {
   await fetchItems();
   isFetchLoading.value = false;
 
-  // 5秒ごとに自動同期ポーリングを実行
-  pollTimer = setInterval(fetchItems, 5000);
+  pollTimer = setInterval(() => {
+    void fetchItems();
+  }, POLL_INTERVAL_MS);
 });
 
 onUnmounted(() => {
@@ -277,7 +328,6 @@ onUnmounted(() => {
   }
 });
 
-// ページタイトルとMaterial Iconsの設定
 useHead({
   title: '買い物リスト',
   link: [
@@ -288,14 +338,12 @@ useHead({
 
 <template>
   <div>
-    <!-- トースト通知 -->
     <Transition name="toast">
       <div v-if="showToast" class="toast-notification" :class="`is-${toastType}`">
         {{ toastMessage }}
       </div>
     </Transition>
 
-    <!-- ヘッダーエリア -->
     <header class="app-header">
       <h1 class="app-title">買い物リスト</h1>
       <div class="header-actions">
@@ -311,29 +359,24 @@ useHead({
         >
           <span v-if="isFetchLoading" class="spinner"/>
           <span v-else class="refresh-icon-container">
-            <!-- Material Icons リロードアイコン -->
             <span class="material-icons refresh-icon">refresh</span>
           </span>
         </button>
       </div>
     </header>
 
-    <!-- メインコンテンツ -->
     <main class="app-content">
-      <!-- 読み込み中 (初回) -->
       <div v-if="items.length === 0 && isFetchLoading" class="empty-state">
         <span class="spinner dark-spinner"/>
         <p class="empty-text loading-text">リストを読み込んでいます...</p>
       </div>
 
-      <!-- 空白状態 -->
       <div v-else-if="items.length === 0" class="empty-state">
         <div class="empty-icon">✓</div>
         <p class="empty-text">現在、買い物リストは空です。<br>Slackに対象アイテムを投稿してください。</p>
       </div>
 
       <div v-else>
-        <!-- AIソート表示モード -->
         <div v-if="isAiSorted" class="shopping-list">
           <div v-for="group in groupedItems" :key="group.name" class="category-group">
             <h2 class="category-title">{{ group.name }}</h2>
@@ -342,10 +385,9 @@ useHead({
                 v-for="item in group.list" 
                 :key="item.ts" 
                 class="item-row"
-                :class="{ 'is-checked': item.checked }"
+                :class="{ 'is-checked': item.checked, 'is-updating': isUpdating(item.ts) }"
                 @click="handleCheckToggle(item)"
               >
-                <!-- 左側：チェックボックス＋アイテムテキスト -->
                 <div class="item-content">
                   <div class="checkbox-container">
                     <input type="checkbox" :checked="item.checked" readonly >
@@ -353,10 +395,9 @@ useHead({
                   </div>
                   <span class="item-text">{{ item.text }}</span>
                 </div>
-                <!-- 右側：投稿ユーザー名と投稿日時を縦積み -->
                 <div class="item-meta">
                   <span class="meta-user" :title="item.user">
-                    {{ item.user.length > 4 ? item.user.slice(0, 4) + '...' : item.user }}
+                    {{ formatUserName(item.user) }}
                   </span>
                   <span class="meta-time">{{ item.tsFormatted }}</span>
                 </div>
@@ -365,16 +406,14 @@ useHead({
           </div>
         </div>
 
-        <!-- 通常の投稿順（昇順）表示モード -->
         <div v-else class="shopping-list">
           <div 
             v-for="item in items" 
             :key="item.ts" 
             class="item-row"
-            :class="{ 'is-checked': item.checked }"
+            :class="{ 'is-checked': item.checked, 'is-updating': isUpdating(item.ts) }"
             @click="handleCheckToggle(item)"
           >
-            <!-- 左側：チェックボックス＋アイテムテキスト -->
             <div class="item-content">
               <div class="checkbox-container">
                 <input type="checkbox" :checked="item.checked" readonly >
@@ -382,10 +421,9 @@ useHead({
               </div>
               <span class="item-text">{{ item.text }}</span>
             </div>
-            <!-- 右側：投稿ユーザー名と投稿日時を縦積み -->
             <div class="item-meta">
               <span class="meta-user" :title="item.user">
-                {{ item.user.length > 4 ? item.user.slice(0, 4) + '...' : item.user }}
+                {{ formatUserName(item.user) }}
               </span>
               <span class="meta-time">{{ item.tsFormatted }}</span>
             </div>
@@ -394,9 +432,7 @@ useHead({
       </div>
     </main>
 
-    <!-- フッター操作パネル -->
     <footer class="app-footer">
-      <!-- AIソートボタン -->
       <button 
         class="btn btn-secondary" 
         :class="{ 'is-active': isAiSorted }"
@@ -408,7 +444,6 @@ useHead({
         <span v-else>✨ AI陳列順ソート</span>
       </button>
 
-      <!-- 購入済み（Slackリアクション追加）ボタン -->
       <button 
         class="btn btn-primary" 
         :disabled="checkedTsList.length === 0 || isDeleteLoading" 

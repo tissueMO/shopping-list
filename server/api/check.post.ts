@@ -1,20 +1,32 @@
 import { defineEventHandler, readBody } from 'h3';
 import { checkedItems } from '../utils/state';
 
+interface CheckRequestBody {
+  ts?: unknown;
+  checked?: unknown;
+}
+
 /**
  * 買い物リストのチェック状態を更新します。
- * ※ 他のユーザーと同期できるようにする
- * @param event イベントオブジェクト
- * @returns 現在チェックされているすべてのメッセージIDのリスト
+ *
+ * @param event リクエストイベント
+ * @returns 現在チェックされているすべてのメッセージID
  */
 export default defineEventHandler(async (event) => {
-  const body = await readBody(event);
+  const body = await readBody<CheckRequestBody>(event);
   const { ts, checked } = body;
 
-  if (!ts) {
+  if (typeof ts !== 'string' || ts.length === 0) {
     throw createError({
       statusCode: 400,
-      statusMessage: 'ts (timestamp) is required.',
+      statusMessage: 'SlackメッセージIDが必要です。',
+    });
+  }
+
+  if (typeof checked !== 'boolean') {
+    throw createError({
+      statusCode: 400,
+      statusMessage: 'チェック状態が必要です。',
     });
   }
 

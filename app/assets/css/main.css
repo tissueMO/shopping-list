@@ -35,7 +35,7 @@
   }
 }
 
-/* Base Styles */
+/* 基本設定 */
 * {
   box-sizing: border-box;
   margin: 0;
@@ -50,27 +50,25 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
-  /* スマホのスクロール制御 */
   -webkit-overflow-scrolling: touch;
-  /* ダブルタップズームの防止 */
   touch-action: manipulation;
 }
 
-/* Layout container for smartphone */
+/* 画面枠 */
 .app-container {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  max-width: 480px; /* スマホ特化幅 */
+  max-width: 480px;
   margin: 0 auto;
   border-left: 1px solid var(--color-border);
   border-right: 1px solid var(--color-border);
   background-color: var(--color-bg);
   position: relative;
-  padding-bottom: 96px; /* フッター固定操作エリア用 */
+  padding-bottom: 96px;
 }
 
-/* Header */
+/* ヘッダー */
 .app-header {
   position: sticky;
   top: 0;
@@ -82,7 +80,6 @@ body {
   background-color: var(--color-bg);
   border-bottom: 1px solid var(--color-border);
   backdrop-filter: blur(8px);
-  /* ダークモードや通常時の背景透過によるガラス質感 */
   background-color: rgba(255, 255, 255, 0.8);
 }
 
@@ -95,7 +92,7 @@ body {
 .app-title {
   font-size: 1.1rem;
   font-weight: 600;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -138,20 +135,20 @@ body {
 }
 
 
-/* Main Content Area */
+/* メイン領域 */
 .app-content {
   flex: 1;
   padding: 20px;
 }
 
-/* List Items Container */
+/* 買い物リスト */
 .shopping-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-/* Section Grouping (AI Sort Mode) */
+/* 分類グループ */
 .category-group {
   margin-bottom: 24px;
 }
@@ -160,14 +157,14 @@ body {
   font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
   color: var(--color-text-secondary);
   border-bottom: 1px solid var(--color-border);
   padding-bottom: 6px;
   margin-bottom: 12px;
 }
 
-/* Shopping Item Row */
+/* アイテム行 */
 .item-row {
   display: flex;
   align-items: center;
@@ -178,7 +175,7 @@ body {
   border-radius: 8px;
   transition: var(--transition-smooth);
   background-color: var(--color-bg);
-  cursor: pointer; /* マウスホバー時にカーソルを指(hand)にする */
+  cursor: pointer;
 }
 
 .item-row.is-checked {
@@ -192,7 +189,12 @@ body {
   }
 }
 
-/* Custom Checkbox */
+.item-row.is-updating {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+/* チェックボックス */
 .checkbox-container {
   display: flex;
   align-items: center;
@@ -200,7 +202,7 @@ body {
   cursor: pointer;
   user-select: none;
   min-height: 20px;
-  pointer-events: none; /* 行クリックとの二重発火を防止 */
+  pointer-events: none;
 }
 
 .checkbox-container input {
@@ -250,7 +252,7 @@ body {
   transform: rotate(45deg);
 }
 
-/* Item Detail (text) */
+/* アイテム名 */
 .item-text {
   font-size: 0.95rem;
   font-weight: 400;
@@ -264,7 +266,7 @@ body {
   color: var(--color-text-muted);
 }
 
-/* Item Meta (user + time on right) */
+/* 投稿情報 */
 .item-meta {
   font-size: 0.7rem;
   color: var(--color-text-muted);
@@ -290,7 +292,7 @@ body {
 }
 
 
-/* Empty State */
+/* 空状態 */
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -313,7 +315,7 @@ body {
   font-weight: 400;
 }
 
-/* Footer Control Area */
+/* フッター操作 */
 .app-footer {
   position: fixed;
   bottom: 0;
@@ -338,12 +340,12 @@ body {
   }
 }
 
-/* Primary and Secondary Buttons */
+/* ボタン */
 .btn {
   font-family: var(--font-sans);
   font-size: 0.85rem;
   font-weight: 500;
-  height: 48px; /* タッチターゲットの適正化 */
+  height: 48px;
   border-radius: 6px;
   border: 1px solid var(--color-border-dark);
   cursor: pointer;
@@ -385,7 +387,7 @@ body {
   border-color: var(--color-btn-bg);
 }
 
-/* Loading Spinners / Animations */
+/* 読み込み表示 */
 .spinner {
   width: 16px;
   height: 16px;
@@ -411,7 +413,7 @@ body {
   to { transform: rotate(360deg); }
 }
 
-/* Toast Sync Alert */
+/* 同期表示 */
 .sync-badge {
   font-size: 0.65rem;
   padding: 4px 8px;
@@ -477,7 +479,7 @@ body {
   100% { transform: scale(0.9); opacity: 0.6; }
 }
 
-/* Toast Notification */
+/* トースト通知 */
 .toast-notification {
   position: fixed;
   top: 20px;
@@ -520,7 +522,7 @@ body {
   }
 }
 
-/* Vue Transition for Toast */
+/* トースト遷移 */
 .toast-enter-from {
   opacity: 0;
   transform: translate(-50%, -20px);
@@ -529,5 +531,4 @@ body {
   opacity: 0;
   transform: translate(-50%, -20px);
 }
-
 

@@ -1,11 +1,10 @@
-import { WebClient } from '@slack/web-api';
-import OpenAI from 'openai';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { WebClient } from '@slack/web-api';
+import OpenAI from 'openai';
 
 /**
  * サーバー側で一時的に保持するチェック済みメッセージIDと登録日時のマップ。
- * ※ 複数ユーザー間のチェック状態を同期するために使用する
  */
 export const checkedItems = new Map<string, number>();
 
@@ -21,7 +20,7 @@ const botNameCache = new Map<string, string>();
 
 /**
  * Slack Web API クライアントを取得します。
- * 
+ *
  * @returns クライアントインスタンス
  */
 let slackClient: WebClient | null = null;
@@ -30,7 +29,7 @@ export function getSlackClient(): WebClient {
     const config = useRuntimeConfig();
     const token = config.slackBotToken;
     if (!token) {
-      throw new Error('NUXT_SLACK_BOT_TOKEN is not configured.');
+      throw new Error('Slackボットトークンが設定されていません。');
     }
     slackClient = new WebClient(token);
   }
@@ -39,7 +38,7 @@ export function getSlackClient(): WebClient {
 
 /**
  * OpenAI API クライアントを取得します。
- * 
+ *
  * @returns クライアントインスタンス
  */
 let openaiClient: OpenAI | null = null;
@@ -48,7 +47,7 @@ export function getOpenAIClient(): OpenAI {
     const config = useRuntimeConfig();
     const apiKey = config.openaiApiKey;
     if (!apiKey) {
-      throw new Error('NUXT_OPENAI_API_KEY is not configured.');
+      throw new Error('OpenAI APIキーが設定されていません。');
     }
     openaiClient = new OpenAI({ apiKey });
   }
@@ -57,7 +56,7 @@ export function getOpenAIClient(): OpenAI {
 
 /**
  * SlackのユーザーIDから表示名を取得します。
- * ※ レートリミット対策としてインメモリキャッシュを利用する
+ *
  * @param userId ユーザーID
  * @returns ユーザーの表示名
  */
@@ -75,7 +74,7 @@ export async function getUserName(userId: string): Promise<string> {
       return name;
     }
   } catch (error) {
-    console.error(`Failed to fetch user info for ${userId}:`, error);
+    console.error(`Slackユーザー情報の取得に失敗しました: ${userId}`, error);
   }
 
   return userId;
@@ -83,7 +82,7 @@ export async function getUserName(userId: string): Promise<string> {
 
 /**
  * SlackのボットIDからボット名を取得します。
- * ※ レートリミット対策としてインメモリキャッシュを利用する
+ *
  * @param botId ボットID
  * @returns ボット名
  */
@@ -101,7 +100,7 @@ export async function getBotName(botId: string): Promise<string> {
       return name;
     }
   } catch (error) {
-    console.error(`Failed to fetch bot info for ${botId}:`, error);
+    console.error(`Slackボット情報の取得に失敗しました: ${botId}`, error);
   }
 
   return botId;
@@ -116,7 +115,7 @@ let cachedConfig: AppConfig | null = null;
 
 /**
  * アプリケーションの設定情報を取得します。
- * ※ config/system_prompt.mdのロードおよびruntimeConfigからのカテゴリー取得を行う
+ *
  * @returns 設定オブジェクト
  */
 export async function getAppConfig(): Promise<AppConfig> {
@@ -126,7 +125,7 @@ export async function getAppConfig(): Promise<AppConfig> {
 
   const config = useRuntimeConfig();
   const rawCategories = config.categories || '';
-  
+
   const categories = rawCategories
     .split(',')
     .map((c) => c.trim())
@@ -144,7 +143,7 @@ export async function getAppConfig(): Promise<AppConfig> {
     };
     return cachedConfig;
   } catch (error) {
-    console.error('Failed to load system_prompt.md, using fallback system prompt:', error);
+    console.error('システムプロンプトの読み込みに失敗しました。既定値を使用します:', error);
     cachedConfig = {
       categories,
       systemPrompt: 'あなたは買い物リストの整理アシスタントです。',
@@ -152,6 +151,3 @@ export async function getAppConfig(): Promise<AppConfig> {
     return cachedConfig;
   }
 }
-
-
-
