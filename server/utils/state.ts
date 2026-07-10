@@ -1,31 +1,43 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { WebClient } from '@slack/web-api';
+import Redis from 'ioredis';
 import OpenAI from 'openai';
 
-/**
- * サーバー側で一時的に保持するチェック済みメッセージIDと登録日時のマップ。
- */
-export const checkedItems = new Map<string, number>();
+interface AppConfig {
+  categories: string[];
+  systemPrompt: string;
+}
+
+const CATEGORY_CACHE_KEY = 'shopping-list:category-cache';
 
 /**
- * ユーザーIDから表示名へのキャッシュ用マップです。
+ * サーバー側で一時的に保持するチェック済みメッセージIDです。
+ */
+export const checkedItems = new Set<string>();
+
+/**
+ * ユーザーIDから表示名への対応です。
  */
 const userNameCache = new Map<string, string>();
 
 /**
- * ボットIDから表示名へのキャッシュ用マップです。
+ * ボットIDから表示名への対応です。
  */
 const botNameCache = new Map<string, string>();
 
-/**
- * Slack Web API クライアントを取得します。
- *
- * @returns クライアントインスタンス
- */
 let slackClient: WebClient | null = null;
+let openaiClient: OpenAI | null = null;
+let redisClient: Redis | null = null;
+let cachedConfig: AppConfig | null = null;
+
+/**
+ * Slack Web APIクライアントを取得します。
+ *
+ * @returns Slack Web APIクライアント
+ */
 export function getSlackClient(): WebClient {
-  if (!slackClient) {
+  if (slackClient === null) {
     const config = useRuntimeConfig();
     const token = config.slackBotToken;
     if (!token) {
@@ -37,13 +49,12 @@ export function getSlackClient(): WebClient {
 }
 
 /**
- * OpenAI API クライアントを取得します。
+ * OpenAI APIクライアントを取得します。
  *
- * @returns クライアントインスタンス
+ * @returns OpenAI APIクライアント
  */
-let openaiClient: OpenAI | null = null;
 export function getOpenAIClient(): OpenAI {
-  if (!openaiClient) {
+  if (openaiClient === null) {
     const config = useRuntimeConfig();
     const apiKey = config.openaiApiKey;
     if (!apiKey) {
@@ -61,8 +72,9 @@ export function getOpenAIClient(): OpenAI {
  * @returns ユーザーの表示名
  */
 export async function getUserName(userId: string): Promise<string> {
-  if (userNameCache.has(userId)) {
-    return userNameCache.get(userId) || userId;
+  const cachedName = userNameCache.get(userId);
+  if (cachedName !== undefined) {
+    return cachedName;
   }
 
   try {
@@ -87,8 +99,9 @@ export async function getUserName(userId: string): Promise<string> {
  * @returns ボット名
  */
 export async function getBotName(botId: string): Promise<string> {
-  if (botNameCache.has(botId)) {
-    return botNameCache.get(botId) || botId;
+  const cachedName = botNameCache.get(botId);
+  if (cachedName !== undefined) {
+    return cachedName;
   }
 
   try {
@@ -106,48 +119,73 @@ export async function getBotName(botId: string): Promise<string> {
   return botId;
 }
 
-interface AppConfig {
-  categories: string[];
-  systemPrompt: string;
-}
-
-let cachedConfig: AppConfig | null = null;
-
 /**
  * アプリケーションの設定情報を取得します。
  *
  * @returns 設定オブジェクト
  */
 export async function getAppConfig(): Promise<AppConfig> {
-  if (cachedConfig) {
+  if (cachedConfig !== null) {
     return cachedConfig;
   }
 
   const config = useRuntimeConfig();
   const rawCategories = config.categories || '';
 
-  const categories = rawCategories
+  const categories = String(rawCategories)
     .split(',')
-    .map((c) => c.trim())
-    .filter((c) => c.length > 0);
-
-  try {
-    const configDir = path.resolve(process.cwd(), 'config');
-    const promptPath = path.resolve(configDir, 'system_prompt.md');
-
-    const systemPrompt = await fs.readFile(promptPath, 'utf-8');
-
-    cachedConfig = {
-      categories,
-      systemPrompt,
-    };
-    return cachedConfig;
-  } catch (error) {
-    console.error('システムプロンプトの読み込みに失敗しました。既定値を使用します:', error);
-    cachedConfig = {
-      categories,
-      systemPrompt: 'あなたは買い物リストの整理アシスタントです。',
-    };
-    return cachedConfig;
+    .map(category => category.trim())
+    .filter(category => category.length > 0);
+  if (categories.length === 0) {
+    throw new Error('買い物カテゴリーが設定されていません。');
   }
+
+  const promptPath = path.resolve(process.cwd(), 'config/system_prompt.md');
+  const systemPrompt = await fs.readFile(promptPath, 'utf-8');
+
+  cachedConfig = {
+    categories,
+    systemPrompt,
+  };
+  return cachedConfig;
+}
+
+/**
+ * Redisクライアントを取得します。
+ *
+ * @returns Redisクライアントインスタンス
+ */
+export function getRedisClient(): Redis {
+  if (redisClient === null) {
+    const config = useRuntimeConfig();
+    redisClient = new Redis(config.redisUrl);
+    redisClient.on('error', (error) => {
+      console.error('Redis接続エラー:', error);
+    });
+  }
+  return redisClient;
+}
+
+/**
+ * Redisから名前とカテゴリーのキャッシュマッピングをすべて取得します。
+ *
+ * @returns カテゴリーキャッシュオブジェクト
+ */
+export async function getCategoryCache(): Promise<Record<string, string>> {
+  const redis = getRedisClient();
+  return await redis.hgetall(CATEGORY_CACHE_KEY);
+}
+
+/**
+ * Redisに新たなカテゴリーキャッシュマッピングを追加保存します。
+ *
+ * @param newEntries 保存する新規キャッシュエントリ
+ */
+export async function saveCategoryCache(newEntries: Record<string, string>): Promise<void> {
+  if (Object.keys(newEntries).length === 0) {
+    return;
+  }
+
+  const redis = getRedisClient();
+  await redis.hset(CATEGORY_CACHE_KEY, newEntries);
 }

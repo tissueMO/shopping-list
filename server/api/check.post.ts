@@ -1,4 +1,5 @@
 import { defineEventHandler, readBody } from 'h3';
+import { isObject } from '../utils/error';
 import { checkedItems } from '../utils/state';
 
 interface CheckRequestBody {
@@ -13,8 +14,9 @@ interface CheckRequestBody {
  * @returns 現在チェックされているすべてのメッセージID
  */
 export default defineEventHandler(async (event) => {
-  const body = await readBody<CheckRequestBody>(event);
-  const { ts, checked } = body;
+  const body: unknown = await readBody<CheckRequestBody>(event);
+  const ts = isObject(body) ? body.ts : undefined;
+  const checked = isObject(body) ? body.checked : undefined;
 
   if (typeof ts !== 'string' || ts.length === 0) {
     throw createError({
@@ -31,7 +33,7 @@ export default defineEventHandler(async (event) => {
   }
 
   if (checked) {
-    checkedItems.set(ts, Date.now());
+    checkedItems.add(ts);
   } else {
     checkedItems.delete(ts);
   }

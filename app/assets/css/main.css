@@ -15,7 +15,11 @@
   --color-btn-disabled-text: #a3a3a3;
   
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --transition-smooth: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-smooth: color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+    background-color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -366,12 +370,6 @@ body {
   opacity: 0.8;
 }
 
-.btn-primary:disabled {
-  background-color: var(--color-btn-disabled);
-  color: var(--color-btn-disabled-text);
-  cursor: not-allowed;
-}
-
 .btn-secondary {
   background-color: var(--color-bg);
   color: var(--color-text-primary);
@@ -387,6 +385,13 @@ body {
   border-color: var(--color-btn-bg);
 }
 
+.btn:disabled {
+  color: var(--color-btn-disabled-text);
+  cursor: not-allowed;
+  background-color: var(--color-btn-disabled);
+  border-color: var(--color-btn-disabled);
+}
+
 /* 読み込み表示 */
 .spinner {
   width: 16px;
@@ -400,6 +405,11 @@ body {
 .btn-secondary .spinner {
   border: 2px solid rgba(0, 0, 0, 0.1);
   border-top-color: var(--color-text-primary);
+}
+
+.btn-secondary.is-active .spinner {
+  border: 2px solid rgba(128, 128, 128, 0.2);
+  border-top-color: var(--color-btn-text);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -531,4 +541,3 @@ body {
   opacity: 0;
   transform: translate(-50%, -20px);
 }
-

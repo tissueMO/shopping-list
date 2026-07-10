@@ -1,6 +1,10 @@
 import { defineEventHandler } from 'h3';
 import { getErrorMessage, getStatusCode } from '../utils/error';
-import { getSlackClient, getUserName, getBotName, checkedItems } from '../utils/state';
+import { getSlackClient, getUserName, getBotName, checkedItems, getCategoryCache } from '../utils/state';
+
+type SlackMessage = NonNullable<Awaited<ReturnType<
+  ReturnType<typeof getSlackClient>['conversations']['history']
+>>['messages']>[number];
 
 interface ShoppingItem {
   ts: string;
@@ -8,10 +12,12 @@ interface ShoppingItem {
   user: string;
   tsFormatted: string;
   checked: boolean;
+  category?: string;
 }
 
 const CHECK_REACTION_NAME = 'heavy_check_mark';
 const SLACK_HISTORY_LIMIT = 100;
+const DISPLAY_TIME_ZONE = 'Asia/Tokyo';
 
 /**
  * 買い物リストのアイテムとなるSlackの投稿メッセージを取得します。
@@ -30,10 +36,13 @@ export default defineEventHandler(async () => {
 
   try {
     const client = getSlackClient();
-    const response = await client.conversations.history({
-      channel: channelId,
-      limit: SLACK_HISTORY_LIMIT,
-    });
+    const [cache, response] = await Promise.all([
+      getCategoryCache(),
+      client.conversations.history({
+        channel: channelId,
+        limit: SLACK_HISTORY_LIMIT,
+      }),
+    ]);
 
     if (!response.ok || !response.messages) {
       throw createError({
@@ -43,46 +52,13 @@ export default defineEventHandler(async () => {
     }
 
     const rawMessages = response.messages
-      .filter(message => {
-        const isParent = !message.thread_ts || message.thread_ts === message.ts;
-        const isNormalMessage = !message.subtype ||
-          message.subtype === 'bot_message' ||
-          message.subtype === 'slackbot_response';
-        const hasCheckReaction = message.reactions?.some(reaction => reaction.name === CHECK_REACTION_NAME);
-
-        return Boolean(isParent && isNormalMessage && message.text && !hasCheckReaction);
-      })
+      .filter(isShoppingItemMessage)
       .toSorted((first, second) => {
         return Number.parseFloat(first.ts || '0') - Number.parseFloat(second.ts || '0');
       });
 
     const items = await Promise.all(
-      rawMessages.map(async (message): Promise<ShoppingItem> => {
-        const ts = message.ts || '';
-        let userName = 'unknown';
-
-        if (message.username) {
-          userName = message.username;
-        } else if (message.user) {
-          userName = await getUserName(message.user);
-        } else if (message.bot_id) {
-          userName = await getBotName(message.bot_id);
-        }
-
-        const date = new Date(Number.parseFloat(ts || '0') * 1000);
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        const hours = String(date.getHours()).padStart(2, '0');
-        const minutes = String(date.getMinutes()).padStart(2, '0');
-
-        return {
-          ts,
-          text: message.text || '',
-          user: userName,
-          tsFormatted: `${month}/${day} ${hours}:${minutes}`,
-          checked: checkedItems.has(ts),
-        };
-      }),
+      rawMessages.map(message => createShoppingItem(message, cache)),
     );
 
     return { items };
@@ -94,3 +70,76 @@ export default defineEventHandler(async () => {
     });
   }
 });
+
+/**
+ * Slackメッセージが買い物リストへ表示できるかを判定します。
+ *
+ * @param message 判定対象のSlackメッセージ
+ * @returns 表示できるかどうか
+ */
+function isShoppingItemMessage(message: SlackMessage): boolean {
+  const isParent = !message.thread_ts || message.thread_ts === message.ts;
+  const isSupportedType = !message.subtype ||
+    message.subtype === 'bot_message' ||
+    message.subtype === 'slackbot_response';
+  const isPurchased = message.reactions?.some(reaction => reaction.name === CHECK_REACTION_NAME);
+  return Boolean(isParent && isSupportedType && message.text && !isPurchased);
+}
+
+/**
+ * Slackメッセージを買い物リストのアイテムへ変換します。
+ *
+ * @param message 変換対象のSlackメッセージ
+ * @param cache カテゴリーキャッシュ
+ * @returns 買い物リストのアイテム
+ */
+async function createShoppingItem(
+  message: SlackMessage,
+  cache: Record<string, string>,
+): Promise<ShoppingItem> {
+  const ts = message.ts || '';
+  const text = message.text || '';
+  return {
+    ts,
+    text,
+    user: await getDisplayName(message),
+    tsFormatted: formatTimestamp(ts),
+    checked: checkedItems.has(ts),
+    category: cache[text],
+  };
+}
+
+/**
+ * Slackメッセージの投稿者名を取得します。
+ *
+ * @param message Slackメッセージ
+ * @returns 表示する投稿者名
+ */
+async function getDisplayName(message: SlackMessage): Promise<string> {
+  if (message.username) {
+    return message.username;
+  } else if (message.user) {
+    return await getUserName(message.user);
+  } else if (message.bot_id) {
+    return await getBotName(message.bot_id);
+  }
+  return '不明';
+}
+
+/**
+ * Slackの投稿時刻を画面表示用に整形します。
+ *
+ * @param timestamp Slackの投稿時刻
+ * @returns 月日と時分
+ */
+function formatTimestamp(timestamp: string): string {
+  const date = new Date(Number.parseFloat(timestamp) * 1000);
+  return new Intl.DateTimeFormat('ja-JP', {
+    timeZone: DISPLAY_TIME_ZONE,
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
+}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 
 interface ShoppingItem {
   ts: string;
@@ -7,7 +7,6 @@ interface ShoppingItem {
   user: string;
   tsFormatted: string;
   checked: boolean;
-  /** AIソート時の分類 */
   category?: string;
 }
 
@@ -17,8 +16,17 @@ interface ShoppingGroup {
 }
 
 interface FetchItemsOptions {
-  /** 購入済み処理中でも更新するかどうか */
+  /** 購入済み処理中も更新するかどうか */
   force?: boolean;
+}
+
+interface AddItemResponse {
+  ts: string;
+  category?: string;
+}
+
+interface PurchaseResponse {
+  status: 'success' | 'partial_success';
 }
 
 const POLL_INTERVAL_MS = 5000;
@@ -26,17 +34,21 @@ const SYNC_BADGE_VISIBLE_MS = 800;
 const TOAST_VISIBLE_MS = 3000;
 const USER_NAME_MAX_LENGTH = 4;
 const UNCLASSIFIED_CATEGORY = '未分類';
-const UNCLASSIFIED_GROUP_NAME = '未分類 (その他)';
+const UNCLASSIFIED_GROUP_NAME = '未分類（その他）';
+const DISPLAY_TIME_ZONE = 'Asia/Tokyo';
 
 const items = ref<ShoppingItem[]>([]);
 const categories = ref<string[]>([]);
 const isFetchLoading = ref(false);
-const isDeleteLoading = ref(false);
+const isPurchaseLoading = ref(false);
 const isAiSortLoading = ref(false);
 const isAiSorted = ref(false);
 const syncActive = ref(false);
-const updatingTsList = ref<string[]>([]);
-
+const syncingItemIds = ref<string[]>([]);
+const addDialog = ref<HTMLDialogElement | null>(null);
+const itemInput = ref<HTMLInputElement | null>(null);
+const newItemText = ref('');
+const isAddLoading = ref(false);
 const showToast = ref(false);
 const toastMessage = ref('');
 const toastType = ref<'success' | 'error'>('success');
@@ -44,97 +56,85 @@ const toastType = ref<'success' | 'error'>('success');
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
-const aiCategoryCache = new Map<string, string>();
-
-/** チェック済みアイテムのSlackメッセージID一覧 */
-const checkedTsList = computed(() => {
+/**
+ * チェック済みアイテムのSlackメッセージIDを返します。
+ *
+ * @returns SlackメッセージID
+ */
+const checkedItemIds = computed(() => {
   return items.value.filter(item => item.checked).map(item => item.ts);
 });
 
-/** AIソート適用時の表示グループ一覧 */
-const groupedItems = computed<ShoppingGroup[]>(() => {
+/**
+ * 現在の表示順に合わせたアイテムグループを返します。
+ *
+ * @returns 表示するアイテムグループ
+ */
+const displayedGroups = computed<ShoppingGroup[]>(() => {
   if (!isAiSorted.value) {
-    return [];
+    return [{ name: '', list: items.value }];
   }
 
-  const groups: Record<string, ShoppingItem[]> = {};
-
-  categories.value.forEach(category => {
-    groups[category] = [];
-  });
-  groups[UNCLASSIFIED_CATEGORY] = [];
+  const groups = new Map<string, ShoppingItem[]>();
+  categories.value.forEach(category => groups.set(category, []));
+  groups.set(UNCLASSIFIED_CATEGORY, []);
 
   items.value.forEach(item => {
-    const category = item.category || UNCLASSIFIED_CATEGORY;
-    if (groups[category]) {
-      groups[category].push(item);
-    } else {
-      groups[UNCLASSIFIED_CATEGORY]!.push(item);
-    }
+    const category = item.category && groups.has(item.category)
+      ? item.category
+      : UNCLASSIFIED_CATEGORY;
+    groups.get(category)?.push(item);
   });
 
-  const result = categories.value.map(category => ({
-    name: category,
-    list: groups[category] || [],
-  })).filter(group => group.list.length > 0);
-
-  const unclassifiedItems = groups[UNCLASSIFIED_CATEGORY] || [];
+  const displayed = categories.value
+    .map(category => ({ name: category, list: groups.get(category) || [] }))
+    .filter(group => group.list.length > 0);
+  const unclassifiedItems = groups.get(UNCLASSIFIED_CATEGORY) || [];
   if (unclassifiedItems.length > 0) {
-    result.push({
+    displayed.push({
       name: UNCLASSIFIED_GROUP_NAME,
       list: unclassifiedItems,
     });
   }
 
-  return result;
+  return displayed;
 });
 
 /**
  * トースト通知を表示します。
- * 
- * @param message メッセージ
+ *
+ * @param message 通知メッセージ
  * @param type 通知の成否タイプ
  */
-function displayToast(message: string, type: 'success' | 'error' = 'success') {
-  if (toastTimer) {
+function displayToast(message: string, type: 'success' | 'error' = 'success'): void {
+  if (toastTimer !== null) {
     clearTimeout(toastTimer);
   }
+
   toastMessage.value = message;
   toastType.value = type;
   showToast.value = true;
   toastTimer = setTimeout(() => {
     showToast.value = false;
+    toastTimer = null;
   }, TOAST_VISIBLE_MS);
 }
 
 /**
- * 指定したアイテムがサーバー同期中かどうかを返します。
+ * 指定したアイテムがSlackと同期中かどうかを返します。
  *
- * @param ts SlackメッセージID
+ * @param itemId SlackメッセージID
  * @returns 同期中かどうか
  */
-function isUpdating(ts: string): boolean {
-  return updatingTsList.value.includes(ts);
-}
-
-/**
- * AIソート中のアイテムにキャッシュ済みカテゴリーを反映します。
- *
- * @param item 対象アイテム
- * @returns カテゴリーを反映したアイテム
- */
-function withAiCategory(item: ShoppingItem): ShoppingItem {
-  return {
-    ...item,
-    category: aiCategoryCache.get(item.ts),
-  };
+function isSyncing(itemId: string): boolean {
+  return syncingItemIds.value.includes(itemId);
 }
 
 /**
  * 画面に収まる投稿者名を返します。
  *
  * @param user 投稿者名
- * @returns 短縮済み投稿者名
+ * @returns 短縮済みの投稿者名
  */
 function formatUserName(user: string): string {
   return user.length > USER_NAME_MAX_LENGTH
@@ -143,22 +143,39 @@ function formatUserName(user: string): string {
 }
 
 /**
+ * Slackの投稿時刻を画面表示用に整形します。
+ *
+ * @param timestamp Slackの投稿時刻
+ * @returns 月日と時分
+ */
+function formatTimestamp(timestamp: string): string {
+  const date = new Date(Number.parseFloat(timestamp) * 1000);
+  return new Intl.DateTimeFormat('ja-JP', {
+    timeZone: DISPLAY_TIME_ZONE,
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
+}
+
+/**
  * Slackから最新の買い物リストを取得します。
- * ※ 他ユーザーのチェック状態も含めて同期する
+ * ※ 同期中のチェック状態は画面側の状態を維持する
  *
  * @param options 更新オプション
  */
-async function fetchItems(options: FetchItemsOptions = {}) {
-  const shouldSkipPolling = isDeleteLoading.value && !options.force;
-  if (shouldSkipPolling) {
+async function fetchItems(options: FetchItemsOptions = {}): Promise<void> {
+  if (isPurchaseLoading.value && !options.force) {
     return;
   }
 
   syncActive.value = true;
   try {
     const data = await $fetch<{ items: ShoppingItem[] }>('/api/items');
-    const protectedItems = data.items.map(fetchedItem => {
-      if (!isUpdating(fetchedItem.ts)) {
+    items.value = data.items.map(fetchedItem => {
+      if (!isSyncing(fetchedItem.ts)) {
         return fetchedItem;
       }
 
@@ -167,12 +184,8 @@ async function fetchItems(options: FetchItemsOptions = {}) {
         ? { ...fetchedItem, checked: currentItem.checked }
         : fetchedItem;
     });
-
-    items.value = isAiSorted.value
-      ? protectedItems.map(withAiCategory)
-      : protectedItems;
   } catch (error) {
-    console.error('Failed to fetch items:', error);
+    console.error('買い物リストの取得に失敗しました:', error);
   } finally {
     setTimeout(() => {
       syncActive.value = false;
@@ -181,19 +194,17 @@ async function fetchItems(options: FetchItemsOptions = {}) {
 }
 
 /**
- * チェック状態が切り替わったときにサーバーに同期します。
- * 
+ * チェック状態をSlackと同期します。
+ *
  * @param item 対象の買い物アイテム
  */
-async function handleCheckToggle(item: ShoppingItem) {
-  if (isUpdating(item.ts)) {
+async function handleCheckToggle(item: ShoppingItem): Promise<void> {
+  if (isSyncing(item.ts)) {
     return;
   }
 
-  updatingTsList.value = [...updatingTsList.value, item.ts];
+  syncingItemIds.value = [...syncingItemIds.value, item.ts];
   const originalChecked = item.checked;
-
-  // 画面状態の先行反映
   item.checked = !item.checked;
 
   try {
@@ -205,128 +216,185 @@ async function handleCheckToggle(item: ShoppingItem) {
       },
     });
   } catch (error) {
-    console.error('Failed to sync check state:', error);
+    console.error('チェック状態の同期に失敗しました:', error);
     item.checked = originalChecked;
     displayToast('同期に失敗しました。', 'error');
   } finally {
-    updatingTsList.value = updatingTsList.value.filter(updatingTs => updatingTs !== item.ts);
+    syncingItemIds.value = syncingItemIds.value.filter(itemId => itemId !== item.ts);
   }
 }
 
 /**
- * チェックされたアイテムをまとめてSlackから購入済みにします。
- * ※ 対象アイテムのSlackメッセージにリアクションを追加する
+ * チェック済みアイテムをSlackで購入済みにします。
  */
-async function deleteCheckedItems() {
-  const tsList = checkedTsList.value;
-  if (tsList.length === 0) {
+async function purchaseCheckedItems(): Promise<void> {
+  const itemIds = checkedItemIds.value;
+  if (itemIds.length === 0) {
     return;
   }
 
-  isDeleteLoading.value = true;
+  isPurchaseLoading.value = true;
   try {
-    const res = await $fetch<{ status: string; message: string }>('/api/items', {
+    const response = await $fetch<PurchaseResponse>('/api/items', {
       method: 'POST',
-      body: { tsList },
+      body: { tsList: itemIds },
     });
-    if (res && res.status === 'partial_success') {
+
+    if (response.status === 'partial_success') {
+      await fetchItems({ force: true });
       displayToast('一部の処理に失敗しました。', 'error');
     } else {
+      items.value = items.value.filter(item => !itemIds.includes(item.ts));
       displayToast('購入済みにしました。', 'success');
+      void fetchItems({ force: true });
     }
-    
-    await fetchItems({ force: true });
   } catch (error) {
-    console.error('Failed to update items:', error);
+    console.error('購入済み処理に失敗しました:', error);
     displayToast('処理に失敗しました。', 'error');
   } finally {
-    isDeleteLoading.value = false;
+    isPurchaseLoading.value = false;
   }
 }
 
 /**
- * AIソートの有効と無効を切り替えます。
- * ※ スーパーの陳列順へのソートを行う
+ * AI陳列順表示の有効と無効を切り替えます。
  */
-async function toggleAiSort() {
+async function toggleAiSort(): Promise<void> {
   if (isAiSorted.value) {
     isAiSorted.value = false;
     return;
   }
 
-  if (items.value.length === 0) {
-    isAiSorted.value = true;
-    return;
-  }
-
-  const hasAllCache = items.value.every(item => aiCategoryCache.has(item.ts));
-  if (hasAllCache) {
-    items.value = items.value.map(withAiCategory);
-    isAiSorted.value = true;
+  isAiSorted.value = true;
+  const unclassifiedItems = items.value.filter(item => !item.category);
+  if (unclassifiedItems.length === 0) {
     return;
   }
 
   isAiSortLoading.value = true;
   try {
-    const res = await $fetch<{ items: Array<{ ts: string, category: string }> }>('/api/sort', {
+    const response = await $fetch<{ items: Array<{ ts: string; category: string }> }>('/api/sort', {
       method: 'POST',
       body: {
         items: items.value.map(item => ({ ts: item.ts, text: item.text })),
       },
     });
-
-    if (res && res.items) {
-      aiCategoryCache.clear();
-      res.items.forEach(item => {
-        aiCategoryCache.set(item.ts, item.category);
-      });
-
-      items.value = items.value.map(withAiCategory);
-      isAiSorted.value = true;
-    }
+    const categoriesById = new Map(response.items.map(item => [item.ts, item.category]));
+    items.value = items.value.map(item => ({
+      ...item,
+      category: categoriesById.get(item.ts) || item.category,
+    }));
   } catch (error) {
-    console.error('Failed to sort items via AI:', error);
-    displayToast('AIソートに失敗しました。', 'error');
+    console.error('AI陳列順への分類に失敗しました:', error);
+    displayToast('一部のAI分類に失敗しました。', 'error');
   } finally {
     isAiSortLoading.value = false;
   }
 }
 
 /**
- * 手動でリストを更新します。
+ * アイテム追加画面を開きます。
  */
-async function handleManualRefresh() {
-  isFetchLoading.value = true;
-  await fetchItems();
-  isFetchLoading.value = false;
+async function openAddDialog(): Promise<void> {
+  newItemText.value = '';
+  addDialog.value?.showModal();
+  await nextTick();
+  itemInput.value?.focus();
 }
 
-onMounted(async () => {
+/**
+ * アイテム追加画面を閉じます。
+ */
+function closeAddDialog(): void {
+  addDialog.value?.close();
+}
+
+/**
+ * 新しいアイテムをSlackへ登録します。
+ */
+async function submitAddItem(): Promise<void> {
+  const text = newItemText.value.trim();
+  if (text.length === 0) {
+    return;
+  }
+
+  isAddLoading.value = true;
+  try {
+    const response = await $fetch<AddItemResponse>('/api/items/add', {
+      method: 'POST',
+      body: { text },
+    });
+    const newItem: ShoppingItem = {
+      ts: response.ts,
+      text,
+      user: '自分',
+      tsFormatted: formatTimestamp(response.ts),
+      checked: false,
+      category: response.category,
+    };
+    items.value = [...items.value, newItem];
+
+    displayToast('アイテムを登録しました。', 'success');
+    closeAddDialog();
+    void fetchItems({ force: true });
+  } catch (error) {
+    console.error('アイテムの登録に失敗しました:', error);
+    displayToast('アイテムの登録に失敗しました。', 'error');
+  } finally {
+    isAddLoading.value = false;
+  }
+}
+
+/**
+ * 買い物リストを手動で更新します。
+ */
+async function handleManualRefresh(): Promise<void> {
   isFetchLoading.value = true;
   try {
-    const configData = await $fetch<{ categories: string[] }>('/api/config');
-    if (configData && configData.categories) {
-      categories.value = configData.categories;
-    }
-  } catch (error) {
-    console.error('Failed to fetch config:', error);
+    await fetchItems();
+  } finally {
+    isFetchLoading.value = false;
   }
-  await fetchItems();
-  isFetchLoading.value = false;
+}
 
+/**
+ * 表示カテゴリーを取得します。
+ */
+async function fetchCategories(): Promise<void> {
+  try {
+    const data = await $fetch<{ categories: string[] }>('/api/config');
+    categories.value = data.categories;
+  } catch (error) {
+    console.error('カテゴリー設定の取得に失敗しました:', error);
+  }
+}
+
+/**
+ * 初期表示に必要な情報を取得します。
+ */
+async function initializePage(): Promise<void> {
+  isFetchLoading.value = true;
+  await Promise.all([fetchCategories(), fetchItems()]);
+  isFetchLoading.value = false;
   pollTimer = setInterval(() => {
     void fetchItems();
   }, POLL_INTERVAL_MS);
-});
+}
 
-onUnmounted(() => {
-  if (pollTimer) {
+/**
+ * 画面で使用したタイマーを停止します。
+ */
+function cleanupPage(): void {
+  if (pollTimer !== null) {
     clearInterval(pollTimer);
   }
-  if (toastTimer) {
+  if (toastTimer !== null) {
     clearTimeout(toastTimer);
   }
-});
+}
+
+onMounted(initializePage);
+onUnmounted(cleanupPage);
 
 useHead({
   title: '買い物リスト',
@@ -339,7 +407,12 @@ useHead({
 <template>
   <div>
     <Transition name="toast">
-      <div v-if="showToast" class="toast-notification" :class="`is-${toastType}`">
+      <div
+        v-if="showToast"
+        class="toast-notification"
+        :class="`is-${toastType}`"
+        :role="toastType === 'error' ? 'alert' : 'status'"
+      >
         {{ toastMessage }}
       </div>
     </Transition>
@@ -351,15 +424,17 @@ useHead({
           <span class="sync-dot" :class="syncActive ? 'is-syncing' : 'is-synced'"/>
           {{ syncActive ? '同期中...' : '同期済み' }}
         </span>
-        <button 
-          class="refresh-btn" 
-          :disabled="isFetchLoading" 
+        <button
+          type="button"
+          class="refresh-btn"
+          :disabled="isFetchLoading"
+          :aria-busy="isFetchLoading"
           aria-label="リストを更新"
           @click="handleManualRefresh"
         >
           <span v-if="isFetchLoading" class="spinner"/>
           <span v-else class="refresh-icon-container">
-            <span class="material-icons refresh-icon">refresh</span>
+            <span class="material-icons refresh-icon" aria-hidden="true">refresh</span>
           </span>
         </button>
       </div>
@@ -372,87 +447,106 @@ useHead({
       </div>
 
       <div v-else-if="items.length === 0" class="empty-state">
-        <div class="empty-icon">✓</div>
-        <p class="empty-text">現在、買い物リストは空です。<br>Slackに対象アイテムを投稿してください。</p>
+        <div class="empty-icon" aria-hidden="true">✓</div>
+        <p class="empty-text">買い物リストは空です。</p>
       </div>
 
-      <div v-else>
-        <div v-if="isAiSorted" class="shopping-list">
-          <div v-for="group in groupedItems" :key="group.name" class="category-group">
-            <h2 class="category-title">{{ group.name }}</h2>
-            <div class="items-container">
-              <div 
-                v-for="item in group.list" 
-                :key="item.ts" 
-                class="item-row"
-                :class="{ 'is-checked': item.checked, 'is-updating': isUpdating(item.ts) }"
-                @click="handleCheckToggle(item)"
-              >
-                <div class="item-content">
-                  <div class="checkbox-container">
-                    <input type="checkbox" :checked="item.checked" readonly >
-                    <span class="checkmark"/>
-                  </div>
-                  <span class="item-text">{{ item.text }}</span>
-                </div>
-                <div class="item-meta">
-                  <span class="meta-user" :title="item.user">
-                    {{ formatUserName(item.user) }}
-                  </span>
-                  <span class="meta-time">{{ item.tsFormatted }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div v-else class="shopping-list">
-          <div 
-            v-for="item in items" 
-            :key="item.ts" 
-            class="item-row"
-            :class="{ 'is-checked': item.checked, 'is-updating': isUpdating(item.ts) }"
-            @click="handleCheckToggle(item)"
-          >
-            <div class="item-content">
-              <div class="checkbox-container">
-                <input type="checkbox" :checked="item.checked" readonly >
-                <span class="checkmark"/>
-              </div>
-              <span class="item-text">{{ item.text }}</span>
-            </div>
-            <div class="item-meta">
-              <span class="meta-user" :title="item.user">
-                {{ formatUserName(item.user) }}
+      <div v-else class="shopping-list">
+        <section v-for="group in displayedGroups" :key="group.name || 'default'" class="category-group">
+          <h2 v-if="group.name" class="category-title">{{ group.name }}</h2>
+          <div class="items-container">
+            <label
+              v-for="item in group.list"
+              :key="item.ts"
+              class="item-row"
+              :class="{ 'is-checked': item.checked, 'is-updating': isSyncing(item.ts) }"
+            >
+              <span class="item-content">
+                <span class="checkbox-container">
+                  <input
+                    type="checkbox"
+                    :checked="item.checked"
+                    :disabled="isSyncing(item.ts)"
+                    @change="handleCheckToggle(item)"
+                  >
+                  <span class="checkmark"/>
+                </span>
+                <span class="item-text">{{ item.text }}</span>
               </span>
-              <span class="meta-time">{{ item.tsFormatted }}</span>
-            </div>
+              <span class="item-meta">
+                <span class="meta-user" :title="item.user">
+                  {{ formatUserName(item.user) }}
+                </span>
+                <span class="meta-time">{{ item.tsFormatted }}</span>
+              </span>
+            </label>
           </div>
-        </div>
+        </section>
       </div>
     </main>
 
     <footer class="app-footer">
-      <button 
-        class="btn btn-secondary" 
+      <button
+        type="button"
+        class="btn btn-secondary"
         :class="{ 'is-active': isAiSorted }"
-        :disabled="isAiSortLoading || items.length === 0" 
+        :disabled="isAiSortLoading || items.length === 0"
+        :aria-busy="isAiSortLoading"
         @click="toggleAiSort"
       >
         <span v-if="isAiSortLoading" class="spinner"/>
-        <span v-else-if="isAiSorted">✨ 通常順に戻す</span>
-        <span v-else>✨ AI陳列順ソート</span>
+        <span>{{ isAiSorted ? '通常順に戻す' : '✨ AI陳列順ソート' }}</span>
       </button>
 
-      <button 
-        class="btn btn-primary" 
-        :disabled="checkedTsList.length === 0 || isDeleteLoading" 
-        @click="deleteCheckedItems"
+      <button
+        type="button"
+        class="btn btn-primary"
+        :disabled="checkedItemIds.length === 0 || isPurchaseLoading"
+        :aria-busy="isPurchaseLoading"
+        @click="purchaseCheckedItems"
       >
-        <span v-if="isDeleteLoading" class="spinner"/>
-        <span v-else>購入済み ({{ checkedTsList.length }})</span>
+        <span v-if="isPurchaseLoading" class="spinner"/>
+        <span v-else>購入済み ({{ checkedItemIds.length }})</span>
       </button>
     </footer>
+
+    <button type="button" class="fab-btn" aria-label="アイテムを追加" @click="openAddDialog">
+      <span class="material-icons" aria-hidden="true">add</span>
+    </button>
+
+    <dialog ref="addDialog" class="add-dialog" @click.self="closeAddDialog" @close="newItemText = ''">
+      <div class="dialog-content">
+        <header class="dialog-header">
+          <h2 class="dialog-title">アイテムを追加</h2>
+          <button type="button" class="close-btn" aria-label="閉じる" @click="closeAddDialog">
+            <span class="material-icons" aria-hidden="true">close</span>
+          </button>
+        </header>
+        <form class="dialog-form" @submit.prevent="submitAddItem">
+          <label class="sr-only" for="item-text">アイテム名</label>
+          <input
+            id="item-text"
+            ref="itemInput"
+            v-model="newItemText"
+            type="text"
+            placeholder="例: 牛乳、たまご"
+            required
+            autocomplete="off"
+            class="dialog-input"
+            :disabled="isAddLoading"
+          >
+          <div class="dialog-actions">
+            <button type="button" class="btn btn-secondary" :disabled="isAddLoading" @click="closeAddDialog">
+              キャンセル
+            </button>
+            <button type="submit" class="btn btn-primary" :disabled="isAddLoading || !newItemText.trim()">
+              <span v-if="isAddLoading" class="spinner"/>
+              <span v-else>登録</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </dialog>
   </div>
 </template>
 
@@ -462,32 +556,166 @@ useHead({
   align-items: center;
   gap: 8px;
 }
+
 .refresh-icon-container {
   display: flex;
   align-items: center;
   justify-content: center;
 }
+
 .refresh-icon {
   font-size: 18px;
   line-height: 1;
 }
+
 .dark-spinner {
-  border-top-color: var(--color-text-primary);
   width: 24px;
   height: 24px;
+  border-top-color: var(--color-text-primary);
 }
+
 .loading-text {
   margin-top: 12px;
 }
+
 .items-container {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
+
 .item-content {
   display: flex;
-  align-items: flex-start;
-  gap: 14px;
   flex: 1;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.fab-btn {
+  position: fixed;
+  right: max(20px, calc((100vw - 480px) / 2 + 20px));
+  bottom: 92px;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 50px;
+  height: 50px;
+  color: var(--color-btn-text);
+  cursor: pointer;
+  background-color: var(--color-btn-bg);
+  border: 1px solid var(--color-border-dark);
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.fab-btn:active {
+  transform: scale(0.95);
+}
+
+.fab-btn .material-icons {
+  font-size: 24px;
+}
+
+.add-dialog {
+  width: calc(100% - 40px);
+  max-width: 400px;
+  padding: 0;
+  margin: auto;
+  background: transparent;
+  border: none;
+}
+
+.add-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.dialog-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+.dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dialog-title {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  background: none;
+  border: none;
+  border-radius: 50%;
+}
+
+.close-btn:active {
+  background-color: var(--color-border);
+}
+
+.dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dialog-input {
+  padding: 10px 12px;
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  color: var(--color-text-primary);
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border-dark);
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.dialog-input:focus {
+  border-color: var(--color-text-primary);
+}
+
+.dialog-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .fab-btn {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
+
+  .dialog-content {
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  }
 }
 </style>

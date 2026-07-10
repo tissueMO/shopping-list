@@ -21,5 +21,6 @@ export default defineNuxtConfig({
     openaiApiKey: '',
     openaiModel: 'gpt-5-mini',
     categories: '',
+    redisUrl: 'redis://redis:6379',
   },
 });
