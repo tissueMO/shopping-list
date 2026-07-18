@@ -1,28 +1,28 @@
 import { defineEventHandler, readBody } from 'h3';
-import { isObject } from '../../utils/error';
-import { getSlackClient, getCategoryCache } from '../../utils/state';
+import { getStatusCode, isObject } from '../../utils/error';
+import { getKeepApiUrl, getCategoryCache } from '../../utils/state';
 
 interface AddItemRequestBody {
   text?: unknown;
 }
 
+interface KeepAddResponse {
+  status: 'success';
+  item: {
+    id: string;
+    text: string;
+    checked: boolean;
+  };
+}
+
 /**
  * 買い物リストに新しいアイテムを登録します。
- * ※Slackチャンネルへ新しいメッセージを投稿する
+ * ※Google Keepリストへ新しいアイテムを追加する。
  *
  * @param event リクエストイベント
- * @returns 登録成功ステータスメッセージ
+ * @returns 登録成功ステータスメッセージと追加されたアイテム情報
  */
 export default defineEventHandler(async (event) => {
-  const config = useRuntimeConfig();
-  const channelId = config.slackChannelId;
-  if (!channelId) {
-    throw createError({
-      statusCode: 500,
-      statusMessage: 'SlackチャンネルIDが設定されていません。',
-    });
-  }
-
   const body: unknown = await readBody<AddItemRequestBody>(event);
   if (!isObject(body) || typeof body.text !== 'string' || body.text.trim().length === 0) {
     throw createError({
@@ -32,29 +32,30 @@ export default defineEventHandler(async (event) => {
   }
 
   const text = body.text.trim();
+  const keepApiUrl = getKeepApiUrl();
+
   try {
     const cache = await getCategoryCache();
-    const client = getSlackClient();
-    const response = await client.chat.postMessage({
-      channel: channelId,
-      text,
+    const response = await $fetch<KeepAddResponse>(`${keepApiUrl}/items/add`, {
+      method: 'POST',
+      body: { text },
     });
 
-    if (!response.ok || !response.ts) {
-      throw new Error(`Slackへの投稿に失敗しました: ${response.error}`);
+    if (response.status !== 'success' || !response.item?.id) {
+      throw new Error('Google Keepへのアイテム追加に失敗しました。');
     }
 
     return {
       status: 'success',
       message: 'アイテムを追加しました。',
-      ts: response.ts,
+      id: response.item.id,
       category: cache[text],
     };
   } catch (error) {
-    console.error('Slackアイテム追加エラー:', error);
+    console.error('Google Keepアイテム追加エラー:', error);
     throw createError({
-      statusCode: 500,
-      statusMessage: 'アイテムの追加に失敗しました。',
+      statusCode: getStatusCode(error),
+      statusMessage: 'Google Keepへアイテムを追加できませんでした。',
     });
   }
 });

@@ -13,8 +13,19 @@ services:
       - .env
     depends_on:
       - redis
+      - keep-api
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+
+  keep-api:
+    build:
+      context: ./keep-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./keep-api:/app
+    env_file:
+      - .env

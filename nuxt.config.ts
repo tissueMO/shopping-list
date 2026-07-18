@@ -16,8 +16,7 @@ export default defineNuxtConfig({
     },
   },
   runtimeConfig: {
-    slackBotToken: '',
-    slackChannelId: '',
+    keepApiUrl: 'http://keep-api:8000',
     openaiApiKey: '',
     openaiModel: 'gpt-5-mini',
     categories: '',

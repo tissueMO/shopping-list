@@ -1,96 +1,71 @@
-# Slack連動買い物リスト
+# Google Keep連動買い物リスト
 
-Slackの指定チャンネルへの投稿を「1投稿＝1アイテム」として扱う、スマートフォン向けの買い物リストです。
+Google Keepの指定リストを正本として使う、スマートフォン向けの買い物リストです。
 
 ## 主な機能
 
-- Slackの未購入アイテムを投稿日時の昇順で表示
-- 画面から新しいアイテムをSlackへ投稿
-- 購入済みアイテムへ`:heavy_check_mark:`リアクションを追加
-- 定期取得による複数利用者間の状態同期
+- Google Keepの未購入アイテムを表示
+- 画面とGoogle Keepの双方向同期
 - OpenAI APIによる陳列カテゴリー分類
-- Redisによるアイテム名ごとのAI分類結果の保存
+- Redisによる分類結果の保存
 
 ## 構成
 
-Nuxt 4のSSRサーバーとAPIを一つのアプリケーションとして動かし、Slack API、OpenAI API、Redisと連携します。
+Nuxt 4とGoogle Keep連携APIは、所有範囲と実行環境が異なるため別コンテナーで動かします。
 
 ```mermaid
 graph TD
-    Browser[ブラウザー]
-
-    subgraph Nuxt[Nuxt 4]
-        Page[買い物リスト画面]
-        Items[アイテムAPI]
-        Sort[AI分類API]
-        State[外部サービス・状態管理]
-    end
-
-    Slack[(Slack API)]
-    OpenAI[OpenAI API]
-    Redis[(Redis)]
-
-    Browser --> Page
-    Page --> Items
-    Page --> Sort
-    Items --> State
-    Sort --> State
-    State --> Slack
-    State --> OpenAI
-    State --> Redis
+    Browser[ブラウザー] --> Nuxt[Nuxt 4]
+    Nuxt --> KeepApi[Google Keep連携API]
+    Nuxt --> OpenAI[OpenAI API]
+    Nuxt --> Redis[(Redis)]
+    KeepApi --> Keep[Google Keep]
 ```
 
-Slackをアイテムのデータストアとして利用します。購入前のチェック状態はNuxtサーバーのメモリーに一時保存し、AI分類結果はRedisへ保存します。
+- `app/`、`server/`: Nuxtの画面とAPI
+- `keep-api/`: Google Keepだけを扱うPython API
+- Redis: アイテム名ごとのAI分類結果
+
+画面で選択した状態はNuxtサーバーのメモリーへ一時保存し、「購入済み」の確定時にGoogle Keepへ反映します。
 
 ## 事前準備
 
-### Slackアプリ
+`.env.example`を`.env`へ複製し、OpenAI、カテゴリー、Redisの設定を入力します。
 
-Slackアプリへ次のBot Token Scopesを設定し、対象チャンネルへ追加します。
+Google Keep用のマスタートークンと端末IDは、次の手順で発行します。
 
-- `channels:history`: パブリックチャンネルの投稿取得
-- `groups:history`: プライベートチャンネルを使う場合の投稿取得
-- `chat:write`: 画面からのアイテム投稿
-- `reactions:write`: 購入済みリアクションの追加
-- `users:read`: 投稿者名の取得
+1. [Google Embedded Setup](https://accounts.google.com/EmbeddedSetup)をブラウザーで開きます。
+2. Googleアカウントへログインし、確認画面で同意します。
+3. 読み込み中のままでも、ブラウザーの開発者ツールを開きます。
+4. `https://accounts.google.com`のCookieから`oauth_token`の値を取得します。
+5. 次のコマンドを実行し、メールアドレスと`oauth_token`を入力します。
 
-Bot User OAuth Tokenと対象チャンネルIDを控えてください。
+```bash
+docker compose run --rm keep-api python3 get_master_token.py
+```
 
-### OpenAI API
+`oauth_token`はパスワードと同様に扱い、保存や共有をしないでください。
 
-OpenAI APIキーを用意してください。
+表示された次の値を`.env`へ設定します。
 
-## 環境変数
+- `KEEP_EMAIL`: Googleアカウントのメールアドレス
+- `KEEP_MASTER_TOKEN`: Google Keep接続用マスタートークン
+- `KEEP_DEVICE_ID`: トークン発行時の端末ID
+- `KEEP_LIST_TITLE`: 買い物リスト名
+- `NUXT_KEEP_API_URL`: Nuxtから見たGoogle Keep連携APIのURL
 
-`.env.example`を基に`.env`を作成します。`.env`は機微情報を含むため、リポジトリーへ追加しないでください。
-
-主な設定値は次のとおりです。
-
-- `NUXT_SLACK_BOT_TOKEN`: Slack Bot User OAuth Token
-- `NUXT_SLACK_CHANNEL_ID`: 対象チャンネルID
-- `NUXT_OPENAI_API_KEY`: OpenAI APIキー
-- `NUXT_OPENAI_MODEL`: 分類に使うモデル
-- `NUXT_CATEGORIES`: 陳列順のカテゴリー一覧
-- `NUXT_REDIS_URL`: Redis接続先
+マスタートークンと端末IDは組で使用します。どちらもリポジトリーへ追加しないでください。
 
 ## 開発環境
 
-パッケージ管理ツールとサーバーは、すべてコンテナー内で実行します。
-
-初回起動時や`package.json`の変更後は、開発用イメージを再構築します。
+パッケージ管理ツールとシェルは、すべてコンテナー内で実行します。
 
 ```bash
-docker compose build app
+docker compose build
 docker compose up
 ```
 
 起動後は[http://localhost:3000](http://localhost:3000)へアクセスします。
-
-パッケージを追加する場合もコンテナー内で実行します。
-
-```bash
-docker compose run --rm app npm install <package-name>
-```
 
 ## 検証
 
@@ -98,13 +73,14 @@ docker compose run --rm app npm install <package-name>
 docker compose exec app npm run lint
 docker compose exec app npx nuxt typecheck
 docker compose exec app npm run build
+docker compose run --rm --no-deps keep-api python3 -m unittest -v test_main.py
 ```
 
 ## 本番用イメージ
 
-```bash
-docker build -t shopping-list-production --target production .
-docker run -d -p 3000:3000 --env-file .env --name shopping-list-production shopping-list-production
-```
+GitHub Actionsは次の2イメージを同じ版で公開します。
 
-本番環境では、`NUXT_REDIS_URL`から接続できるRedisが別途必要です。
+- `ghcr.io/<owner>/<repository>:<tag>`: Nuxtアプリケーション
+- `ghcr.io/<owner>/<repository>-keep-api:<tag>`: Google Keep連携API
+
+本番環境では両イメージとRedisを同じネットワークへ配置し、Nuxtから`NUXT_KEEP_API_URL`でGoogle Keep連携APIを参照します。

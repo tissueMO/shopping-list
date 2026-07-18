@@ -2,10 +2,8 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 
 interface ShoppingItem {
-  ts: string;
+  id: string;
   text: string;
-  user: string;
-  tsFormatted: string;
   checked: boolean;
   category?: string;
 }
@@ -21,21 +19,19 @@ interface FetchItemsOptions {
 }
 
 interface AddItemResponse {
-  ts: string;
+  id: string;
   category?: string;
 }
 
 interface PurchaseResponse {
-  status: 'success' | 'partial_success';
+  status: 'success';
 }
 
 const POLL_INTERVAL_MS = 5000;
 const SYNC_BADGE_VISIBLE_MS = 800;
 const TOAST_VISIBLE_MS = 3000;
-const USER_NAME_MAX_LENGTH = 4;
 const UNCLASSIFIED_CATEGORY = '未分類';
 const UNCLASSIFIED_GROUP_NAME = '未分類（その他）';
-const DISPLAY_TIME_ZONE = 'Asia/Tokyo';
 
 const items = ref<ShoppingItem[]>([]);
 const categories = ref<string[]>([]);
@@ -57,12 +53,12 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
- * チェック済みアイテムのSlackメッセージIDを返します。
+ * 選択済みのアイテムIDを返します。
  *
- * @returns SlackメッセージID
+ * @returns アイテムID
  */
 const checkedItemIds = computed(() => {
-  return items.value.filter(item => item.checked).map(item => item.ts);
+  return items.value.filter(item => item.checked).map(item => item.id);
 });
 
 /**
@@ -121,9 +117,9 @@ function displayToast(message: string, type: 'success' | 'error' = 'success'): v
 }
 
 /**
- * 指定したアイテムがSlackと同期中かどうかを返します。
+ * 指定したアイテムが同期中かどうかを返します。
  *
- * @param itemId SlackメッセージID
+ * @param itemId アイテムID
  * @returns 同期中かどうか
  */
 function isSyncing(itemId: string): boolean {
@@ -131,37 +127,7 @@ function isSyncing(itemId: string): boolean {
 }
 
 /**
- * 画面に収まる投稿者名を返します。
- *
- * @param user 投稿者名
- * @returns 短縮済みの投稿者名
- */
-function formatUserName(user: string): string {
-  return user.length > USER_NAME_MAX_LENGTH
-    ? `${user.slice(0, USER_NAME_MAX_LENGTH)}...`
-    : user;
-}
-
-/**
- * Slackの投稿時刻を画面表示用に整形します。
- *
- * @param timestamp Slackの投稿時刻
- * @returns 月日と時分
- */
-function formatTimestamp(timestamp: string): string {
-  const date = new Date(Number.parseFloat(timestamp) * 1000);
-  return new Intl.DateTimeFormat('ja-JP', {
-    timeZone: DISPLAY_TIME_ZONE,
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(date);
-}
-
-/**
- * Slackから最新の買い物リストを取得します。
+ * Google Keepから最新の買い物リストを取得します。
  * ※ 同期中のチェック状態は画面側の状態を維持する
  *
  * @param options 更新オプション
@@ -175,11 +141,11 @@ async function fetchItems(options: FetchItemsOptions = {}): Promise<void> {
   try {
     const data = await $fetch<{ items: ShoppingItem[] }>('/api/items');
     items.value = data.items.map(fetchedItem => {
-      if (!isSyncing(fetchedItem.ts)) {
+      if (!isSyncing(fetchedItem.id)) {
         return fetchedItem;
       }
 
-      const currentItem = items.value.find(item => item.ts === fetchedItem.ts);
+      const currentItem = items.value.find(item => item.id === fetchedItem.id);
       return currentItem
         ? { ...fetchedItem, checked: currentItem.checked }
         : fetchedItem;
@@ -194,16 +160,16 @@ async function fetchItems(options: FetchItemsOptions = {}): Promise<void> {
 }
 
 /**
- * チェック状態をSlackと同期します。
+ * チェック状態をサーバーと同期します。
  *
  * @param item 対象の買い物アイテム
  */
 async function handleCheckToggle(item: ShoppingItem): Promise<void> {
-  if (isSyncing(item.ts)) {
+  if (isSyncing(item.id)) {
     return;
   }
 
-  syncingItemIds.value = [...syncingItemIds.value, item.ts];
+  syncingItemIds.value = [...syncingItemIds.value, item.id];
   const originalChecked = item.checked;
   item.checked = !item.checked;
 
@@ -211,7 +177,7 @@ async function handleCheckToggle(item: ShoppingItem): Promise<void> {
     await $fetch('/api/check', {
       method: 'POST',
       body: {
-        ts: item.ts,
+        id: item.id,
         checked: item.checked,
       },
     });
@@ -220,12 +186,12 @@ async function handleCheckToggle(item: ShoppingItem): Promise<void> {
     item.checked = originalChecked;
     displayToast('同期に失敗しました。', 'error');
   } finally {
-    syncingItemIds.value = syncingItemIds.value.filter(itemId => itemId !== item.ts);
+    syncingItemIds.value = syncingItemIds.value.filter(itemId => itemId !== item.id);
   }
 }
 
 /**
- * チェック済みアイテムをSlackで購入済みにします。
+ * 選択済みアイテムをGoogle Keepで購入済みにします。
  */
 async function purchaseCheckedItems(): Promise<void> {
   const itemIds = checkedItemIds.value;
@@ -235,19 +201,14 @@ async function purchaseCheckedItems(): Promise<void> {
 
   isPurchaseLoading.value = true;
   try {
-    const response = await $fetch<PurchaseResponse>('/api/items', {
+    await $fetch<PurchaseResponse>('/api/items', {
       method: 'POST',
-      body: { tsList: itemIds },
+      body: { ids: itemIds },
     });
 
-    if (response.status === 'partial_success') {
-      await fetchItems({ force: true });
-      displayToast('一部の処理に失敗しました。', 'error');
-    } else {
-      items.value = items.value.filter(item => !itemIds.includes(item.ts));
-      displayToast('購入済みにしました。', 'success');
-      void fetchItems({ force: true });
-    }
+    items.value = items.value.filter(item => !itemIds.includes(item.id));
+    displayToast('購入済みにしました。', 'success');
+    void fetchItems({ force: true });
   } catch (error) {
     console.error('購入済み処理に失敗しました:', error);
     displayToast('処理に失敗しました。', 'error');
@@ -273,16 +234,16 @@ async function toggleAiSort(): Promise<void> {
 
   isAiSortLoading.value = true;
   try {
-    const response = await $fetch<{ items: Array<{ ts: string; category: string }> }>('/api/sort', {
+    const response = await $fetch<{ items: Array<{ id: string; category: string }> }>('/api/sort', {
       method: 'POST',
       body: {
-        items: items.value.map(item => ({ ts: item.ts, text: item.text })),
+        items: items.value.map(item => ({ id: item.id, text: item.text })),
       },
     });
-    const categoriesById = new Map(response.items.map(item => [item.ts, item.category]));
+    const categoriesById = new Map(response.items.map(item => [item.id, item.category]));
     items.value = items.value.map(item => ({
       ...item,
-      category: categoriesById.get(item.ts) || item.category,
+      category: categoriesById.get(item.id) || item.category,
     }));
   } catch (error) {
     console.error('AI陳列順への分類に失敗しました:', error);
@@ -310,7 +271,7 @@ function closeAddDialog(): void {
 }
 
 /**
- * 新しいアイテムをSlackへ登録します。
+ * 新しいアイテムをGoogle Keepへ登録します。
  */
 async function submitAddItem(): Promise<void> {
   const text = newItemText.value.trim();
@@ -325,10 +286,8 @@ async function submitAddItem(): Promise<void> {
       body: { text },
     });
     const newItem: ShoppingItem = {
-      ts: response.ts,
+      id: response.id,
       text,
-      user: '自分',
-      tsFormatted: formatTimestamp(response.ts),
       checked: false,
       category: response.category,
     };
@@ -457,27 +416,21 @@ useHead({
           <div class="items-container">
             <label
               v-for="item in group.list"
-              :key="item.ts"
+              :key="item.id"
               class="item-row"
-              :class="{ 'is-checked': item.checked, 'is-updating': isSyncing(item.ts) }"
+              :class="{ 'is-checked': item.checked, 'is-updating': isSyncing(item.id) }"
             >
               <span class="item-content">
                 <span class="checkbox-container">
                   <input
                     type="checkbox"
                     :checked="item.checked"
-                    :disabled="isSyncing(item.ts)"
+                    :disabled="isSyncing(item.id)"
                     @change="handleCheckToggle(item)"
                   >
                   <span class="checkmark"/>
                 </span>
                 <span class="item-text">{{ item.text }}</span>
-              </span>
-              <span class="item-meta">
-                <span class="meta-user" :title="item.user">
-                  {{ formatUserName(item.user) }}
-                </span>
-                <span class="meta-time">{{ item.tsFormatted }}</span>
               </span>
             </label>
           </div>

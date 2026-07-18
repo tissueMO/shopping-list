@@ -7,12 +7,12 @@ interface SortRequestBody {
 }
 
 interface SortItem {
-  ts: string;
+  id: string;
   text: string;
 }
 
 interface SortResponseItem {
-  ts: string;
+  id: string;
   category: string;
 }
 
@@ -81,7 +81,7 @@ function parseItems(value: unknown): SortItem[] {
     });
   }
 
-  const itemIds = new Set(value.map(item => item.ts));
+  const itemIds = new Set(value.map(item => item.id));
   if (itemIds.size !== value.length) {
     throw createError({
       statusCode: 400,
@@ -100,7 +100,7 @@ function parseItems(value: unknown): SortItem[] {
  */
 function isSortItem(value: unknown): value is SortItem {
   return isObject(value) &&
-    typeof value.ts === 'string' && value.ts.length > 0 &&
+    typeof value.id === 'string' && value.id.length > 0 &&
     typeof value.text === 'string' && value.text.trim().length > 0;
 }
 
@@ -140,7 +140,7 @@ function createResponseItems(
     if (category === undefined) {
       throw new Error(`分類結果がありません: ${item.text}`);
     }
-    return { ts: item.ts, category };
+    return { id: item.id, category };
   });
 }
 
@@ -160,7 +160,7 @@ async function classifyItems(
   modelName: string,
 ): Promise<Record<string, string>> {
   const openai = getOpenAIClient();
-  const itemList = items.map(item => `- [ID: ${item.ts}] ${item.text}`).join('\n');
+  const itemList = items.map(item => `- [ID: ${item.id}] ${item.text}`).join('\n');
   const response = await openai.chat.completions.create({
     model: modelName,
     messages: [
@@ -187,7 +187,7 @@ ${itemList}`,
               items: {
                 type: 'object',
                 properties: {
-                  ts: {
+                  id: {
                     type: 'string',
                     description: 'アイテムの一意なID',
                   },
@@ -197,7 +197,7 @@ ${itemList}`,
                     enum: categories,
                   },
                 },
-                required: ['ts', 'category'],
+                required: ['id', 'category'],
                 additionalProperties: false,
               },
             },
@@ -235,23 +235,23 @@ function parseClassification(
     throw new Error('OpenAI APIの応答形式が不正です。');
   }
 
-  const itemsById = new Map(items.map(item => [item.ts, item]));
+  const itemsById = new Map(items.map(item => [item.id, item]));
   const categoriesByText: Record<string, string> = {};
   const receivedIds = new Set<string>();
   parsedResult.items.forEach(item => {
-    const originalItem = isObject(item) && typeof item.ts === 'string'
-      ? itemsById.get(item.ts)
+    const originalItem = isObject(item) && typeof item.id === 'string'
+      ? itemsById.get(item.id)
       : undefined;
     if (!isObject(item) ||
-      typeof item.ts !== 'string' ||
+      typeof item.id !== 'string' ||
       typeof item.category !== 'string' ||
       originalItem === undefined ||
       !categorySet.has(item.category) ||
-      receivedIds.has(item.ts)) {
+      receivedIds.has(item.id)) {
       throw new Error('OpenAI APIの応答内容が不正です。');
     }
 
-    receivedIds.add(item.ts);
+    receivedIds.add(item.id);
     categoriesByText[originalItem.text] = item.category;
   });
 

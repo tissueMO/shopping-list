@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { WebClient } from '@slack/web-api';
 import Redis from 'ioredis';
 import OpenAI from 'openai';
 
@@ -12,40 +11,26 @@ interface AppConfig {
 const CATEGORY_CACHE_KEY = 'shopping-list:category-cache';
 
 /**
- * サーバー側で一時的に保持するチェック済みメッセージIDです。
+ * サーバー側で一時的に保持する選択済みアイテムIDです。
  */
-export const checkedItems = new Set<string>();
+export const checkedItemIds = new Set<string>();
 
-/**
- * ユーザーIDから表示名への対応です。
- */
-const userNameCache = new Map<string, string>();
-
-/**
- * ボットIDから表示名への対応です。
- */
-const botNameCache = new Map<string, string>();
-
-let slackClient: WebClient | null = null;
 let openaiClient: OpenAI | null = null;
 let redisClient: Redis | null = null;
 let cachedConfig: AppConfig | null = null;
 
 /**
- * Slack Web APIクライアントを取得します。
+ * Google Keep APIサーバーのURLを取得します。
  *
- * @returns Slack Web APIクライアント
+ * @returns Keep APIサーバーのベースURL
  */
-export function getSlackClient(): WebClient {
-  if (slackClient === null) {
-    const config = useRuntimeConfig();
-    const token = config.slackBotToken;
-    if (!token) {
-      throw new Error('Slackボットトークンが設定されていません。');
-    }
-    slackClient = new WebClient(token);
+export function getKeepApiUrl(): string {
+  const config = useRuntimeConfig();
+  const url = String(config.keepApiUrl).replace(/\/+$/, '');
+  if (!url) {
+    throw new Error('Google Keep APIのURLが設定されていません。');
   }
-  return slackClient;
+  return url;
 }
 
 /**
@@ -63,60 +48,6 @@ export function getOpenAIClient(): OpenAI {
     openaiClient = new OpenAI({ apiKey });
   }
   return openaiClient;
-}
-
-/**
- * SlackのユーザーIDから表示名を取得します。
- *
- * @param userId ユーザーID
- * @returns ユーザーの表示名
- */
-export async function getUserName(userId: string): Promise<string> {
-  const cachedName = userNameCache.get(userId);
-  if (cachedName !== undefined) {
-    return cachedName;
-  }
-
-  try {
-    const client = getSlackClient();
-    const res = await client.users.info({ user: userId });
-    if (res.ok && res.user) {
-      const name = res.user.profile?.display_name || res.user.real_name || res.user.name || userId;
-      userNameCache.set(userId, name);
-      return name;
-    }
-  } catch (error) {
-    console.error(`Slackユーザー情報の取得に失敗しました: ${userId}`, error);
-  }
-
-  return userId;
-}
-
-/**
- * SlackのボットIDからボット名を取得します。
- *
- * @param botId ボットID
- * @returns ボット名
- */
-export async function getBotName(botId: string): Promise<string> {
-  const cachedName = botNameCache.get(botId);
-  if (cachedName !== undefined) {
-    return cachedName;
-  }
-
-  try {
-    const client = getSlackClient();
-    const res = await client.bots.info({ bot: botId });
-    if (res.ok && res.bot) {
-      const name = res.bot.name || botId;
-      botNameCache.set(botId, name);
-      return name;
-    }
-  } catch (error) {
-    console.error(`Slackボット情報の取得に失敗しました: ${botId}`, error);
-  }
-
-  return botId;
 }
 
 /**

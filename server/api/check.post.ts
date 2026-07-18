@@ -1,9 +1,9 @@
 import { defineEventHandler, readBody } from 'h3';
 import { isObject } from '../utils/error';
-import { checkedItems } from '../utils/state';
+import { checkedItemIds } from '../utils/state';
 
 interface CheckRequestBody {
-  ts?: unknown;
+  id?: unknown;
   checked?: unknown;
 }
 
@@ -11,17 +11,17 @@ interface CheckRequestBody {
  * 買い物リストのチェック状態を更新します。
  *
  * @param event リクエストイベント
- * @returns 現在チェックされているすべてのメッセージID
+ * @returns 現在選択されているすべてのアイテムID
  */
 export default defineEventHandler(async (event) => {
   const body: unknown = await readBody<CheckRequestBody>(event);
-  const ts = isObject(body) ? body.ts : undefined;
+  const id = isObject(body) ? body.id : undefined;
   const checked = isObject(body) ? body.checked : undefined;
 
-  if (typeof ts !== 'string' || ts.length === 0) {
+  if (typeof id !== 'string' || id.length === 0) {
     throw createError({
       statusCode: 400,
-      statusMessage: 'SlackメッセージIDが必要です。',
+      statusMessage: 'アイテムIDが必要です。',
     });
   }
 
@@ -33,12 +33,12 @@ export default defineEventHandler(async (event) => {
   }
 
   if (checked) {
-    checkedItems.add(ts);
+    checkedItemIds.add(id);
   } else {
-    checkedItems.delete(ts);
+    checkedItemIds.delete(id);
   }
 
   return {
-    checkedList: Array.from(checkedItems.keys()),
+    checkedList: Array.from(checkedItemIds),
   };
 });
