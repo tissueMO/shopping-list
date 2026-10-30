@@ -1,4 +1,4 @@
-FROM node:24-alpine AS base
+FROM node:24-slim AS base
 WORKDIR /app
 COPY package*.json ./
 
@@ -18,7 +18,7 @@ RUN npm run lint
 RUN npx nuxt typecheck
 RUN npm run build
 
-FROM node:24-alpine AS production
+FROM node:24-slim AS production
 WORKDIR /app
 COPY --from=build /app/.output ./.output
 ENV PORT=3000
